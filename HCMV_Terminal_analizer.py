@@ -1,5 +1,5 @@
-#!  /bin/bash
-import argparse
+#! /bin/bash
+
 """
 Author: Ahmed Al Qaffas
 Program: HCMV Terminal Analyzer
@@ -20,8 +20,8 @@ Logic:
 <Visualization>
 
 """
-# To import:
-import sys
+
+import argparse
 import os
 import subprocess
 
@@ -46,100 +46,159 @@ def _converter(bam_file="AddName_p1"):
     _run_supressed(f"""
     samtools fastq {bam_file}.bam > {bam_file}.fastq
     """)
+    return f'{bam_file}.fastq'
 
 
 def _total_reads(file_name):
     p = subprocess.run(['bash', '-c', f"samtools view -c {file_name}.bam"],
                        capture_output=True, stdout=None, stderr=None)
-    return f"The number of reads mapped to '{file_name}' is: " + str(p.stdout, 'utf-8')
+    output_dis = f"The number of reads mapped to '{file_name}' is: " + str(p.stdout, 'utf-8').strip()
+    print(output_dis)
+    return output_dis
 
 
-def _create_vis(los):
-    for i in ['a']:
-        _run_supressed("""
-    """)
+def _mergfastq(matching_string="", out_name="name", header="ccs"):
+    _run_supressed(f"cat {matching_string}.fastq > {out_name}.fastq")
+    p = subprocess.run(['bash', '-c', f"grep -e \"{header}\" {out_name}.fastq | sort | uniq -c | wc"],
+                       capture_output=True)
+    subprocess.run(['bash', '-c',
+                    f"grep -e \"{header}\" {out_name}.fastq | sort | uniq -c > analysis_outputs/{out_name}_headrs_count.txt"])
+    out_numb = str(p.stdout, 'utf-8').strip().split("     ")[0]
+    print(f"The merged files using regex {matching_string} and header {header} resulted in\n {out_numb} reads")
+    return out_numb
 
 
+def _create_vis(ref, los):
+    for i in los:
+        _mapper(ref, i, name=f'ref_{i.split(".")[0]}')
+
+
+# Running the program:
 if __name__ == '__main__':
-    print("")
-    print("Running analysis:\n")
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-a', help="Complete 'a' sequence")
-    parser.add_argument('-b', help="Complete 'b' sequence")
-    parser.add_argument('-c', help="Complete 'c' sequence")
-    parser.add_argument('-ccs', help="CCS reads")
-    parser.add_argument('-ref', help="Whole genome reference in FastA")
-    parser.add_argument('-ult', help="+2000 bp of UL from the left genomic region")
-    parser.add_argument('-ulj', help="+2000 bp of UL from the junction  region")
-    parser.add_argument('-usr', help="+2000 bp of US from the right genomic region")
+    parser = argparse.ArgumentParser(description="""
+    This program generate multiple files to estimate the terminal repeats sequence""")
+    # Taking inputs:
+    parser.add_argument('-a', '--aseq', metavar='aseq', help="Complete 'a' sequence in FastA format")
+    parser.add_argument('-b', '--bseq', metavar='bseq', help="Complete 'b' sequence in FastA format")
+    parser.add_argument('-c', '--cseq', metavar='cseq', help="Complete 'c' sequence in FastA format")
+    parser.add_argument('-ccs', '--ccs', metavar='ccs', help="CCS reads in FastQ format")
+    parser.add_argument('-ref', '--ref', metavar='ref', help="Whole genome reference in FastA")
 
+    # For each end of the UL region, we need two files that capture each isoform sequence.
+    parser.add_argument('-ult', '--ult', metavar='ult',
+                        help="+2000 bp of UL from the left genomic region in FastA format")
+    parser.add_argument('-ulto', '--ulto', metavar='ulto',
+                        help="+2000 bp of UL from the left genomic region in FastA format from another isoform")
 
-    # ref = sys.argv[1]
-    # name = ref.split("/")[-1].split(".")[0]
-    ccs_reads = sys.argv[1]
-    a_seq = sys.argv[2]  # Complete 'a' sequence
-    b_seq = sys.argv[3]  # Complete 'b' sequence
-    c_seq = sys.argv[4]  # Complete 'c' or c' sequence
-    UL_left = sys.argv[5]  # About 3000 bases of  UL near the terminal region
-    UL_right = sys.argv[6]  # About 3000 bases of  UL junction region
+    parser.add_argument('-ulj', '--ulj', metavar='ulj', help="+2000 bp of UL from the junction  region in FastA format")
 
+    # Similarly, for each end of the US region, we need two files that capture each isoform sequence.
+    parser.add_argument('-usr', '--ust', metavar='ust',
+                        help="+2000 bp of US from the terminal genomic region in FastA format")
+    parser.add_argument('-usj', '--usj', metavar='usj',
+                        help="+2000 bp of US from the terminal genomic region in FastA format")
+    # Parse arguments:
+    args = parser.parse_args()
 
-    """<a>"""
-    # Map CCS reads to a_seq only:
-    _mapper(ref=a_seq, name="a", reads=ccs_reads)
-    print(_total_reads("a"))
-    _converter("a")
+    # initiate some logistics:
 
-    """<ab>"""
-    # Map (a) to b_seq:
-    _mapper(ref=b_seq, reads="a.fastq", name="ab")
-    print(_total_reads("ab"))
-    _converter("ab")
+    # The following folder will contain the following stats:
+    # Number of reads that has been merged from two fastq files and their total count.
+    # Stats regrading a, b, and c sequences.
+    _run_supressed("mkdir analysis_outputs")
 
-    """<ab-UL-Left>"""
-    # Map (ab) to UL_left:
-    _mapper(ref=UL_left, reads="ab.fastq", name="ab_UL_left")
-    print(_total_reads("ab_UL_left"))
-    _converter("ab_UL_left")
+    # list that contains which sequence got generated for visualization.
+    los = []
 
-    """<ab-UL-right>"""
-    # Map (ab) to UL_left:
-    _mapper(ref=UL_right, reads="ab.fastq", name="ab_UL_right")
-    print(_total_reads("ab_UL_right"))
-    _converter("ab_UL_right")
+    # Starting the analysis pipeline fo a sequence:
+    """
+    (A) Mapping step:
+     each mapping step will generate:
+        i- bam alignment file 
+        ii-fastq file of filtered reads. 
+     * sometimes the mapping step will also be added to a que to be mapped against the whole genomic sequence. 
+    """
+    if not args.bseq or not args.cseq or not args.aseq:
+        print("Although you can run this program without all the repeats included some of \nthe "
+              "steps demands that all the repeats to be presents.")
 
-    """<abc>"""
-    # Map (ab) to c_seq:
-    _mapper(ref=c_seq, reads="ab.fastq", name="abc")
-    print(_total_reads("abc"))
-    _converter("abc")
+    if args.aseq:
+        """<a>"""
+        # Map CCS reads to a_seq only:
+        _mapper(ref=args.aseq, name="a", reads=args.ccs)
+        a_mapped = _total_reads("a")
+        los.append(_converter("a"))
 
-    """<ab_no_c>"""
-    # Filter c_seq from reads containing (ab):
-    _mapper(ref=c_seq, reads="ab.fastq", name="ab_no_c", F_value="f 4", q_value=0)
-    print(_total_reads("ab_no_c"))
-    _converter("ab_no_c")
+    if args.bseq:
+        """<b>"""
+        # Map CCS reads to a_seq only:
+        _mapper(ref=args.bseq, name="b", reads=args.ccs)
+        b_mapped = _total_reads("b")
+        los.append(_converter("b"))
 
-    """<c>"""
-    # Map CCS reads to c_seq:
-    _mapper(ref=c_seq, reads=ccs_reads, name="c")
-    print(_total_reads("c"))
-    _converter("c")
+        if args.bseq:
+            """<ab>"""
+            # Map (a) to b_seq:
+            _mapper(ref=args.bseq, reads="a.fastq", name="ab")
+            ab_mapped = _total_reads("ab")
+            los.append(_converter("ab"))
 
-    """<c_no_a>"""  # remove
-    # Filter a_seq from reads containing (c):
-    _mapper(ref=a_seq, reads="c.fastq", name="c_no_a", F_value="f 4", q_value=0)
-    print(_total_reads("c_no_a"))
-    _converter("c_no_a")
+    if args.cseq:
+        """<c>"""
+        # Map CCS reads to c_seq:
+        _mapper(ref=args.cseq, reads=args.ccs, name="c")
+        c_mapped = _total_reads("c")
+        los.append(_converter("c"))
 
-    """c_no_a_no_b"""
-    # Filter a_seq from reads containing (c):
-    _mapper(ref=b_seq, reads="c.fastq", name="c_no_b", F_value="f 4", q_value=0)
-    print(_total_reads("c_no_b"))
-    _converter("c_no_b")
+        if args.aseq and args.bseq:
+            """<abc>"""
+            # Map (ab) to c_seq:
+            _mapper(ref=args.cseq, reads="ab.fastq", name="abc")
+            abc_mapped = _total_reads("abc")
+            los.append(_converter("abc"))
 
-    """ Creating visualizations """
+            """<ab_no_c>"""
+            # Filter c_seq from reads containing (ab):
+            _mapper(ref=args.cseq, reads="ab.fastq", name="ab_no_c", F_value="f 4", q_value=0)
+            ab0c_mapped = _total_reads("ab_no_c")
+            los.append(_converter("ab_no_c"))
 
-    """ Generating Stats"""
+            # Map reads that has no c sequences to UL left and right
+            if args.ult:
+                _mapper(ref=args.ult, reads='ab_no_c.fastq', name='ab0c_ul')
+                ab0c_UL = _total_reads("ab0c_ul")
+                _converter("ab0c_ul")
+                if args.ulto:
+                    _mapper(ref=args.ulto, reads='ab_no_c.fastq', name='ab0c_ul_iso')
+                    ab0c_UL = _total_reads("ab0c_ul_iso")
+                    _converter("ab0c_ul_iso")
+                    _mergfastq(matching_string="*_ul*", out_name="UL_two_iso")
 
+        if args.aseq:
+            """<c_no_a>"""  # remove
+            # Filter a_seq from reads containing (c):
+            _mapper(ref=args.aseq, reads="c.fastq", name="c_no_a", F_value="f 4", q_value=0)
+            print(_total_reads("c_no_a"))
+            los.append(_converter("c_no_a"))
+        if args.bseq:
+            """c_no_b"""
+            _mapper(ref=args.bseq, reads="c.fastq", name="c_no_b", F_value="f 4", q_value=0)
+            print(_total_reads("c_no_b"))
+            los.append(_converter("c_no_b"))
+        if args.usj:
+            """c-US-junction"""
+            _mapper(ref=args.usj, reads="c.fastq", name="c_US_jun")
+            print(_total_reads("c_US_jun"))
+            los.append(_converter("c_US_jun"))
+        if args.ust:
+            """US_c terminal"""
+            _mapper(ref=args.ust, reads="c.fastq", name="c_US_ter")
+            print(_total_reads("c_US_ter"))
+            los.append(_converter("c_US_ter"))
+    if args.ref:
+        print(f"The entered reference  is {args.ref}")
+        _create_vis(args.ref, los)
+
+    print(los)
+    print("Some calculations and outputs saved on analysis")
 
